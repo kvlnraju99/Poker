@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Simple Poker</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <section class="join-view panel" id="join-view">
+        <div class="join-copy">
+          <p class="eyebrow">Texas Hold'em</p>
+          <h1>Simple Poker</h1>
+          <p class="subtle">
+            Join the table with a name, open the app on other devices or tabs for more players, and
+            play live from the same hosted page.
+          </p>
+        </div>
+
+        <form id="join-form" class="join-form">
+          <label>
+            <span>Your name</span>
+            <input id="player-name" name="name" maxlength="16" autocomplete="nickname" required>
+          </label>
+          <button type="submit" class="primary">Join Table</button>
+        </form>
+
+        <p id="join-error" class="error-text" role="status" aria-live="polite"></p>
+      </section>
+
+      <main id="table-view" class="table-view" hidden>
+        <header class="topbar panel">
+          <div>
+            <p class="eyebrow">Simple Poker</p>
+            <h1>Live Table</h1>
+            <p id="status-line" class="subtle"></p>
+          </div>
+
+          <div class="topbar-actions">
+            <button id="start-hand-button" class="primary">Start Hand</button>
+            <button id="leave-table-button" class="secondary">Leave Table</button>
+          </div>
+        </header>
+
+        <section class="table-layout">
+          <section class="panel board-panel">
+            <div class="board-head">
+              <div>
+                <p class="eyebrow">Board</p>
+                <h2 id="street-label">Waiting</h2>
+              </div>
+              <div class="pot-chip">
+                <span>Pot</span>
+                <strong id="pot-value">0</strong>
+              </div>
+            </div>
+
+            <div id="community-cards" class="cards-row community-row"></div>
+
+            <div class="stats-grid">
+              <article class="stat-card">
+                <span>To Call</span>
+                <strong id="to-call-value">0</strong>
+              </article>
+              <article class="stat-card">
+                <span>Current Bet</span>
+                <strong id="current-bet-value">0</strong>
+              </article>
+              <article class="stat-card">
+                <span>Last Raise</span>
+                <strong id="last-raise-value">0</strong>
+              </article>
+              <article class="stat-card">
+                <span>This Street</span>
+                <strong id="street-total-value">0</strong>
+              </article>
+            </div>
+          </section>
+
+          <aside class="panel action-panel">
+            <div class="player-summary">
+              <div>
+                <p class="eyebrow">You</p>
+                <h2 id="you-name">Player</h2>
+              </div>
+              <strong id="you-chips" class="chip-count">0 chips</strong>
+            </div>
+
+            <div id="your-cards" class="cards-row"></div>
+
+            <div class="action-group">
+              <button id="check-button" class="secondary">Check</button>
+              <button id="call-button" class="secondary">Call</button>
+              <button id="fold-button" class="secondary danger">Fold</button>
+            </div>
+
+            <div class="raise-row">
+              <label>
+                <span>Raise to</span>
+                <input id="raise-input" type="number" min="0" step="10">
+              </label>
+              <button id="raise-button" class="primary">Raise</button>
+            </div>
+
+            <div class="action-group">
+              <button id="all-in-button" class="secondary">All In</button>
+              <button id="rebuy-button" class="secondary">Rebuy 1000</button>
+            </div>
+
+            <p id="action-error" class="error-text" role="status" aria-live="polite"></p>
+          </aside>
+
+          <section class="panel players-panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Seats</p>
+                <h2>Players</h2>
+              </div>
+              <span id="player-count" class="subtle"></span>
+            </div>
+            <div id="players-grid" class="players-grid"></div>
+          </section>
+
+          <section class="panel log-panel">
+            <div class="section-head">
+              <div>
+                <p class="eyebrow">Round Info</p>
+                <h2>Table Feed</h2>
+              </div>
+            </div>
+
+            <div id="last-hand" class="last-hand-summary empty-state">
+              No hand finished yet.
+            </div>
+
+            <ul id="action-log" class="feed-list"></ul>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
