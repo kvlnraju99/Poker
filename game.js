@@ -5,8 +5,10 @@ const crypto = require("node:crypto");
 const STARTING_CHIPS = 1000;
 const SMALL_BLIND = 10;
 const BIG_BLIND = 20;
-const MAX_PLAYERS = 8;
+const MAX_PLAYERS = 10;
 const INACTIVITY_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_TURN_TIME_LIMIT_SECONDS = 120;
+const TURN_TIME_LIMIT_OPTIONS = new Set([30, 60, 120, 180]);
 
 const SUITS = ["S", "H", "D", "C"];
 const SUIT_SYMBOLS = {
@@ -16,9 +18,15 @@ const SUIT_SYMBOLS = {
   C: "♣"
 };
 const RANKS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+const GAME_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-function createTable() {
+function createTable(options = {}) {
   return {
+    gameCode: createGameCode(),
+    hostPlayerId: null,
+    gameStarted: false,
+    turnTimeLimitSeconds: sanitizeTurnTimeLimit(options.turnTimeLimitSeconds),
+    turnDeadlineAt: null,
     players: [],
     stage: "waiting",
     handNumber: 0,
@@ -68,16 +76,26 @@ function joinPlayer(table, rawName) {
     throw new Error("Enter a player name.");
   }
 
-  if (table.players.length >= MAX_PLAYERS) {
-    throw new Error("Table is full.");
-  }
-
-  const duplicate = table.players.some(
+  const existingPlayer = table.players.find(
     (player) => !player.markedForRemoval && player.name.toLowerCase() === name.toLowerCase()
   );
 
-  if (duplicate) {
+  if (existingPlayer) {
+    if (existingPlayer.disconnected) {
+      existingPlayer.token = crypto.randomBytes(24).toString("hex");
+      existingPlayer.lastSeenAt = Date.now();
+      existingPlayer.disconnected = false;
+      existingPlayer.markedForRemoval = false;
+      existingPlayer.lastAction = "Rejoined table";
+      logAction(table, `${existingPlayer.name} rejoined the table.`);
+      return existingPlayer;
+    }
+
     throw new Error("That name is already taken.");
+  }
+
+  if (table.players.length >= MAX_PLAYERS) {
+    throw new Error("Table is full.");
   }
 
   const player = {
@@ -99,6 +117,7 @@ function joinPlayer(table, rawName) {
   };
 
   table.players.push(player);
+  syncHostPlayer(table);
   logAction(table, `${player.name} joined the table.`);
 
   return player;
@@ -111,7 +130,24 @@ function sanitizeName(rawName) {
     .slice(0, 16);
 }
 
+function createGameCode() {
+  let code = "";
+
+  for (let index = 0; index < 6; index += 1) {
+    const randomIndex = crypto.randomInt(GAME_CODE_ALPHABET.length);
+    code += GAME_CODE_ALPHABET[randomIndex];
+  }
+
+  return code;
+}
+
+function sanitizeTurnTimeLimit(rawValue) {
+  const value = Math.floor(Number(rawValue));
+  return TURN_TIME_LIMIT_OPTIONS.has(value) ? value : DEFAULT_TURN_TIME_LIMIT_SECONDS;
+}
+
 function authenticate(table, playerId, token) {
+  syncTable(table);
   const player = table.players.find((entry) => entry.id === playerId && entry.token === token);
 
   if (!player) {
@@ -151,19 +187,24 @@ function cleanupInactivePlayers(table) {
 
   if (!changed) {
     removeMarkedPlayers(table);
+    syncHostPlayer(table);
     return;
   }
 
   resolveTableAfterExternalChange(table);
   removeMarkedPlayers(table);
+  syncHostPlayer(table);
 }
 
 function applyAction(table, player, action, amount) {
-  cleanupInactivePlayers(table);
+  syncTable(table);
 
   switch (action) {
+    case "startGame":
+      startGame(table, player);
+      break;
     case "startHand":
-      startHand(table);
+      startNextHand(table, player);
       break;
     case "fold":
       foldPlayer(table, player);
@@ -190,7 +231,29 @@ function applyAction(table, player, action, amount) {
       throw new Error("Unknown action.");
   }
 
-  cleanupInactivePlayers(table);
+  syncTable(table);
+}
+
+function startGame(table, player) {
+  ensureHost(table, player);
+
+  if (table.gameStarted) {
+    throw new Error("The game already started.");
+  }
+
+  table.gameStarted = true;
+  logAction(table, `${player.name} started the game.`);
+  startHand(table);
+}
+
+function startNextHand(table, player) {
+  ensureHost(table, player);
+
+  if (!table.gameStarted) {
+    throw new Error("Start the game from the lobby first.");
+  }
+
+  startHand(table);
 }
 
 function startHand(table) {
@@ -251,7 +314,7 @@ function startHand(table) {
       ? table.dealerIndex
       : findNextIndex(table, table.bigBlindIndex, canActOnTurn);
 
-  table.turnPlayerId = firstToActIndex === -1 ? null : table.players[firstToActIndex].id;
+  setTurnPlayerByIndex(table, firstToActIndex);
 
   logAction(table, `Hand #${table.handNumber} started.`);
 }
@@ -483,7 +546,16 @@ function leavePlayer(table, player) {
   if (index >= 0) {
     table.players.splice(index, 1);
     fixButtonIndexesAfterRemoval(table, index);
+    syncHostPlayer(table);
     logAction(table, `${player.name} left the table.`);
+  }
+}
+
+function ensureHost(table, player) {
+  syncHostPlayer(table);
+
+  if (!player || table.hostPlayerId !== player.id) {
+    throw new Error("Only the host can do that.");
   }
 }
 
@@ -544,7 +616,7 @@ function completeTurn(table, actingPlayerId) {
 
   const actingIndex = table.players.findIndex((player) => player.id === actingPlayerId);
   const nextActingIndex = findNextIndex(table, actingIndex, canActOnTurn);
-  table.turnPlayerId = nextActingIndex === -1 ? null : table.players[nextActingIndex].id;
+  setTurnPlayerByIndex(table, nextActingIndex);
 }
 
 function countRemainingPlayers(table) {
@@ -630,7 +702,7 @@ function startStage(table, stage) {
     return;
   }
 
-  table.turnPlayerId = table.players[nextActingIndex].id;
+  setTurnPlayerByIndex(table, nextActingIndex);
 }
 
 function drawCommunityCards(table, count) {
@@ -764,6 +836,7 @@ function finalizeHand(table) {
   table.lastAggressorId = null;
   table.stage = "waiting";
   table.turnPlayerId = null;
+  table.turnDeadlineAt = null;
   table.roundStats = createRoundStats("waiting", 0, 0, 0);
 
   for (const player of table.players) {
@@ -798,7 +871,7 @@ function resolveTableAfterExternalChange(table) {
 
   const startIndex = turnPlayer ? table.players.findIndex((player) => player.id === turnPlayer.id) : table.dealerIndex;
   const nextActingIndex = findNextIndex(table, startIndex, canActOnTurn);
-  table.turnPlayerId = nextActingIndex === -1 ? null : table.players[nextActingIndex].id;
+  setTurnPlayerByIndex(table, nextActingIndex);
 }
 
 function removeMarkedPlayers(table) {
@@ -814,6 +887,8 @@ function removeMarkedPlayers(table) {
     table.players.splice(index, 1);
     fixButtonIndexesAfterRemoval(table, index);
   }
+
+  syncHostPlayer(table);
 }
 
 function fixButtonIndexesAfterRemoval(table, removedIndex) {
@@ -836,6 +911,76 @@ function adjustIndexAfterRemoval(index, removedIndex) {
   }
 
   return index;
+}
+
+function syncHostPlayer(table) {
+  const currentHost = table.players.find(
+    (player) => player.id === table.hostPlayerId && !player.markedForRemoval
+  );
+
+  if (currentHost) {
+    return;
+  }
+
+  const fallback =
+    table.players.find((player) => !player.markedForRemoval && !player.disconnected) ||
+    table.players.find((player) => !player.markedForRemoval) ||
+    null;
+
+  table.hostPlayerId = fallback ? fallback.id : null;
+}
+
+function setTurnPlayerByIndex(table, playerIndex) {
+  if (playerIndex === -1 || !table.players[playerIndex]) {
+    table.turnPlayerId = null;
+    table.turnDeadlineAt = null;
+    return;
+  }
+
+  table.turnPlayerId = table.players[playerIndex].id;
+  table.turnDeadlineAt = Date.now() + table.turnTimeLimitSeconds * 1000;
+}
+
+function syncTable(table) {
+  cleanupInactivePlayers(table);
+  syncHostPlayer(table);
+
+  while (processTurnTimeout(table)) {
+    cleanupInactivePlayers(table);
+    syncHostPlayer(table);
+  }
+}
+
+function processTurnTimeout(table) {
+  if (!table.gameStarted || table.stage === "waiting" || !table.turnPlayerId || !table.turnDeadlineAt) {
+    return false;
+  }
+
+  if (Date.now() < table.turnDeadlineAt) {
+    return false;
+  }
+
+  const player = table.players.find((entry) => entry.id === table.turnPlayerId);
+  if (!player || !canActOnTurn(player)) {
+    table.turnDeadlineAt = null;
+    resolveTableAfterExternalChange(table);
+    return true;
+  }
+
+  const toCall = Math.max(0, table.currentBet - player.currentBet);
+  if (toCall === 0) {
+    player.actedThisStage = true;
+    player.lastAction = "Timed out and checked";
+    logAction(table, `${player.name} timed out and checked.`);
+  } else {
+    player.hasFolded = true;
+    player.actedThisStage = true;
+    player.lastAction = "Timed out and folded";
+    logAction(table, `${player.name} timed out and folded.`);
+  }
+
+  completeTurn(table, player.id);
+  return true;
 }
 
 function findNextIndex(table, startIndex, predicate) {
@@ -923,11 +1068,19 @@ function shuffle(deck) {
 }
 
 function getClientState(table, viewer) {
-  cleanupInactivePlayers(table);
+  syncTable(table);
   syncRoundStats(table);
+  const eligiblePlayers = getEligibleIndexes(table, canJoinHand).length;
 
   return {
+    view: table.gameStarted ? "table" : "lobby",
     table: {
+      gameCode: table.gameCode,
+      hostPlayerId: table.hostPlayerId,
+      gameStarted: table.gameStarted,
+      turnTimeLimitSeconds: table.turnTimeLimitSeconds,
+      turnDeadlineAt: table.turnDeadlineAt,
+      maxPlayers: MAX_PLAYERS,
       stage: table.stage,
       handNumber: table.handNumber,
       communityCards: table.communityCards.map(toClientCard),
@@ -936,7 +1089,7 @@ function getClientState(table, viewer) {
       bigBlind: BIG_BLIND,
       dealerId: table.players[table.dealerIndex] ? table.players[table.dealerIndex].id : null,
       turnPlayerId: table.turnPlayerId,
-      canStart: table.stage === "waiting" && getEligibleIndexes(table, canJoinHand).length >= 2,
+      canStart: table.stage === "waiting" && eligiblePlayers >= 2,
       roundStats: {
         ...table.roundStats,
         playersRemaining: countRemainingPlayers(table),
@@ -960,6 +1113,7 @@ function getClientState(table, viewer) {
           currentBet: player.currentBet,
           totalContribution: player.totalContribution,
           lastAction: player.lastAction,
+          isHost: player.id === table.hostPlayerId,
           isDealer: index === table.dealerIndex,
           isSmallBlind: index === table.smallBlindIndex,
           isBigBlind: index === table.bigBlindIndex,
@@ -979,7 +1133,9 @@ function buildViewerState(table, viewer) {
   const toCall = Math.max(0, table.currentBet - viewer.currentBet);
   const maxBet = viewer.currentBet + viewer.chips;
   const minRaiseTo = table.currentBet === 0 ? BIG_BLIND : table.currentBet + table.minRaise;
+  const canStart = getEligibleIndexes(table, canJoinHand).length >= 2;
   const canRaise =
+    table.gameStarted &&
     table.stage !== "waiting" &&
     table.turnPlayerId === viewer.id &&
     viewer.inHand &&
@@ -990,6 +1146,7 @@ function buildViewerState(table, viewer) {
   return {
     id: viewer.id,
     name: viewer.name,
+    isHost: table.hostPlayerId === viewer.id,
     chips: viewer.chips,
     cards: viewer.holeCards.map(toClientCard),
     toCall,
@@ -997,14 +1154,25 @@ function buildViewerState(table, viewer) {
     maxBet,
     isTurn: table.turnPlayerId === viewer.id,
     availableActions: {
-      startHand: table.stage === "waiting" && getEligibleIndexes(table, canJoinHand).length >= 2,
+      startGame:
+        !table.gameStarted &&
+        table.hostPlayerId === viewer.id &&
+        table.stage === "waiting" &&
+        canStart,
+      startHand:
+        table.gameStarted &&
+        table.hostPlayerId === viewer.id &&
+        table.stage === "waiting" &&
+        canStart,
       fold:
+        table.gameStarted &&
         table.stage !== "waiting" &&
         table.turnPlayerId === viewer.id &&
         viewer.inHand &&
         !viewer.hasFolded &&
         !viewer.isAllIn,
       check:
+        table.gameStarted &&
         table.stage !== "waiting" &&
         table.turnPlayerId === viewer.id &&
         viewer.inHand &&
@@ -1012,6 +1180,7 @@ function buildViewerState(table, viewer) {
         !viewer.isAllIn &&
         toCall === 0,
       call:
+        table.gameStarted &&
         table.stage !== "waiting" &&
         table.turnPlayerId === viewer.id &&
         viewer.inHand &&
@@ -1020,6 +1189,7 @@ function buildViewerState(table, viewer) {
         toCall > 0,
       raise: canRaise,
       allIn:
+        table.gameStarted &&
         table.stage !== "waiting" &&
         table.turnPlayerId === viewer.id &&
         viewer.inHand &&

@@ -3,141 +3,181 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#d7d7d7">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <title>Simple Poker</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
     <div class="app-shell">
-      <section class="join-view panel" id="join-view">
-        <div class="join-copy">
-          <p class="eyebrow">Texas Hold'em</p>
-          <h1>Simple Poker</h1>
-          <p class="subtle">
-            Join the table with a name, open the app on other devices or tabs for more players, and
-            play live from the same hosted page.
-          </p>
-        </div>
+      <section id="home-view" class="panel view-section">
+        <h1>Simple Poker</h1>
+        <p class="muted-text">Create a new game or join with a game pin.</p>
 
-        <form id="join-form" class="join-form">
+        <div class="form-block">
           <label>
             <span>Your name</span>
-            <input id="player-name" name="name" maxlength="16" autocomplete="nickname" required>
+            <input id="home-name" maxlength="16" autocomplete="nickname" required>
           </label>
-          <button type="submit" class="primary">Join Table</button>
-        </form>
 
-        <p id="join-error" class="error-text" role="status" aria-live="polite"></p>
+          <label>
+            <span>Turn time limit</span>
+            <select id="turn-time-select">
+              <option value="30">30 seconds</option>
+              <option value="60">1 minute</option>
+              <option value="120" selected>2 minutes</option>
+              <option value="180">3 minutes</option>
+            </select>
+          </label>
+
+          <button id="create-game-button" class="primary">Create New Game</button>
+        </div>
+
+        <div class="separator"><span>OR</span></div>
+
+        <div class="form-block">
+          <label>
+            <span>Game pin</span>
+            <input id="join-game-code" maxlength="8" autocapitalize="characters" spellcheck="false">
+          </label>
+
+          <button id="join-game-button" class="secondary">Join Game</button>
+        </div>
+
+        <p id="home-error" class="error-text" role="status" aria-live="polite"></p>
       </section>
 
-      <main id="table-view" class="table-view" hidden>
-        <header class="topbar panel">
+      <section id="lobby-view" class="panel view-section" hidden>
+        <h1>Game Lobby</h1>
+
+        <div class="info-grid">
+          <article class="info-box">
+            <span>Game Pin</span>
+            <strong id="lobby-game-code">------</strong>
+          </article>
+          <article class="info-box">
+            <span>Turn Limit</span>
+            <strong id="lobby-turn-limit">2 minutes</strong>
+          </article>
+          <article class="info-box">
+            <span>Players</span>
+            <strong id="lobby-player-count">0 / 10</strong>
+          </article>
+        </div>
+
+        <div class="action-row">
+          <button id="copy-game-code-button" class="secondary">Copy Pin</button>
+          <button id="start-game-button" class="primary">Start Game</button>
+          <button id="leave-lobby-button" class="secondary">Leave Game</button>
+        </div>
+
+        <p id="lobby-note" class="muted-text"></p>
+
+        <section class="subpanel">
+          <h2>Players</h2>
+          <div class="players-header lobby-players-header">
+            <span>Player</span>
+            <span>Status</span>
+          </div>
+          <div id="lobby-players" class="players-table"></div>
+        </section>
+
+        <p id="lobby-error" class="error-text" role="status" aria-live="polite"></p>
+      </section>
+
+      <main id="table-view" class="view-section" hidden>
+        <header class="panel header-panel">
           <div>
-            <p class="eyebrow">Simple Poker</p>
-            <h1>Live Table</h1>
-            <p id="status-line" class="subtle"></p>
+            <h1>Simple Poker</h1>
+            <p id="status-line" class="muted-text"></p>
+            <p class="muted-text">
+              Game <strong id="table-game-code">------</strong>
+              |
+              Turn Limit <strong id="table-turn-limit">2 minutes</strong>
+              |
+              <span id="turn-timer-label">No active timer</span>
+            </p>
           </div>
 
-          <div class="topbar-actions">
-            <button id="start-hand-button" class="primary">Start Hand</button>
-            <button id="leave-table-button" class="secondary">Leave Table</button>
+          <div class="action-row">
+            <button id="start-hand-button" class="primary">Start Next Hand</button>
+            <button id="leave-table-button" class="secondary">Leave Game</button>
           </div>
         </header>
 
-        <section class="table-layout">
-          <section class="panel board-panel">
-            <div class="board-head">
-              <div>
-                <p class="eyebrow">Board</p>
-                <h2 id="street-label">Waiting</h2>
+        <section class="panel compact-cards-panel">
+          <div class="cards-layout">
+            <section class="cards-block">
+              <div class="section-head compact-head">
+                <h2>Board</h2>
               </div>
-              <div class="pot-chip">
-                <span>Pot</span>
-                <strong id="pot-value">0</strong>
+              <div id="community-cards" class="cards-row"></div>
+            </section>
+
+            <section class="cards-block">
+              <div class="section-head compact-head">
+                <h2>Your Hand</h2>
+                <div class="muted-text you-summary">
+                  <strong id="you-name">Player</strong>
+                  <span id="you-chips">0 chips</span>
+                </div>
               </div>
+              <div id="your-cards" class="cards-row"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="table-action-layout">
+            <div class="vertical-stats-wrap">
+              <table class="vertical-stats-table">
+                <tbody>
+                  <tr>
+                    <th>Pot</th>
+                    <td id="pot-value">0</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
 
-            <div id="community-cards" class="cards-row community-row"></div>
-
-            <div class="stats-grid">
-              <article class="stat-card">
-                <span>To Call</span>
-                <strong id="to-call-value">0</strong>
-              </article>
-              <article class="stat-card">
-                <span>Current Bet</span>
-                <strong id="current-bet-value">0</strong>
-              </article>
-              <article class="stat-card">
-                <span>Last Raise</span>
-                <strong id="last-raise-value">0</strong>
-              </article>
-              <article class="stat-card">
-                <span>This Street</span>
-                <strong id="street-total-value">0</strong>
-              </article>
-            </div>
-          </section>
-
-          <aside class="panel action-panel">
-            <div class="player-summary">
-              <div>
-                <p class="eyebrow">You</p>
-                <h2 id="you-name">Player</h2>
-              </div>
-              <strong id="you-chips" class="chip-count">0 chips</strong>
-            </div>
-
-            <div id="your-cards" class="cards-row"></div>
-
-            <div class="action-group">
-              <button id="check-button" class="secondary">Check</button>
-              <button id="call-button" class="secondary">Call</button>
-              <button id="fold-button" class="secondary danger">Fold</button>
-            </div>
-
-            <div class="raise-row">
-              <label>
-                <span>Raise to</span>
-                <input id="raise-input" type="number" min="0" step="10">
+            <div class="dropdown-actions-panel">
+              <label class="action-select-label">
+                <span>Action</span>
+                <div class="action-inline-row">
+                  <select id="action-select">
+                    <option value="">No action</option>
+                  </select>
+                  <input id="raise-input" type="number" min="0" step="10" placeholder="Amount">
+                  <button id="action-submit-button" class="primary">Play</button>
+                </div>
               </label>
-              <button id="raise-button" class="primary">Raise</button>
             </div>
+          </div>
 
-            <div class="action-group">
-              <button id="all-in-button" class="secondary">All In</button>
-              <button id="rebuy-button" class="secondary">Rebuy 1000</button>
-            </div>
+          <p id="action-error" class="error-text" role="status" aria-live="polite"></p>
+        </section>
 
-            <p id="action-error" class="error-text" role="status" aria-live="polite"></p>
-          </aside>
-
-          <section class="panel players-panel">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">Seats</p>
-                <h2>Players</h2>
-              </div>
-              <span id="player-count" class="subtle"></span>
-            </div>
-            <div id="players-grid" class="players-grid"></div>
-          </section>
-
-          <section class="panel log-panel">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">Round Info</p>
-                <h2>Table Feed</h2>
-              </div>
-            </div>
-
-            <div id="last-hand" class="last-hand-summary empty-state">
-              No hand finished yet.
-            </div>
-
-            <ul id="action-log" class="feed-list"></ul>
-          </section>
+        <section class="panel">
+          <h2>Players</h2>
+          <div class="players-header">
+            <span>Player</span>
+            <span>Status</span>
+            <span>Chips</span>
+            <span>Round</span>
+            <span>Total</span>
+            <span>Note</span>
+          </div>
+          <div id="players-grid" class="players-table"></div>
         </section>
       </main>
+    </div>
+
+    <div id="rotate-overlay" class="rotate-overlay" hidden>
+      <div class="rotate-card">
+        <strong>Rotate to landscape</strong>
+        <span>This table is optimized for phone landscape mode.</span>
+      </div>
     </div>
 
     <script src="/app.js" defer></script>

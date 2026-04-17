@@ -16,6 +16,7 @@ const {
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_DIR = path.join(__dirname, "public");
+const games = new Map();
 
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -24,8 +25,6 @@ const MIME_TYPES = {
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml; charset=utf-8"
 };
-
-const table = createTable();
 
 const server = http.createServer(async (req, res) => {
   try {
@@ -43,45 +42,112 @@ const server = http.createServer(async (req, res) => {
 });
 
 async function handleApiRequest(req, res, requestUrl) {
-  if (req.method === "GET" && requestUrl.pathname === "/api/state") {
-    const playerId = requestUrl.searchParams.get("playerId");
-    const token = requestUrl.searchParams.get("token");
-    const player = authenticate(table, playerId, token);
-
-    if (!player) {
-      sendJson(res, 401, { error: "Session expired. Join again." });
-      return;
-    }
-
-    sendJson(res, 200, getClientState(table, player));
+  if (req.method === "POST" && requestUrl.pathname === "/api/create-game") {
+    const body = await readJsonBody(req);
+    const table = createUniqueTable({ turnTimeLimitSeconds: body.turnTimeLimitSeconds });
+    const hostPlayer = joinPlayer(table, body.name);
+    table.hostPlayerId = hostPlayer.id;
+    games.set(table.gameCode, table);
+    sendJson(res, 201, {
+      gameCode: table.gameCode,
+      playerId: hostPlayer.id,
+      token: hostPlayer.token
+    });
     return;
   }
 
-  if (req.method === "POST" && requestUrl.pathname === "/api/join") {
+  if (req.method === "POST" && requestUrl.pathname === "/api/join-game") {
     const body = await readJsonBody(req);
+    const gameCode = normalizeGameCode(body.gameCode);
+    const table = games.get(gameCode);
+
+    if (!table) {
+      sendJson(res, 404, { error: "Game not found." });
+      return;
+    }
+
     const player = joinPlayer(table, body.name);
     sendJson(res, 201, {
+      gameCode: table.gameCode,
       playerId: player.id,
       token: player.token
     });
     return;
   }
 
+  if (req.method === "GET" && requestUrl.pathname === "/api/state") {
+    const gameCode = normalizeGameCode(requestUrl.searchParams.get("gameCode"));
+    const playerId = requestUrl.searchParams.get("playerId");
+    const token = requestUrl.searchParams.get("token");
+    const table = games.get(gameCode);
+
+    if (!table) {
+      sendJson(res, 404, { error: "Game not found." });
+      return;
+    }
+
+    const player = authenticate(table, playerId, token);
+    if (!player) {
+      sendJson(res, 401, { error: "Session expired. Join again." });
+      return;
+    }
+
+    sendJson(res, 200, getClientState(table, player));
+    return;
+  }
+
   if (req.method === "POST" && requestUrl.pathname === "/api/action") {
     const body = await readJsonBody(req);
-    const player = authenticate(table, body.playerId, body.token);
+    const gameCode = normalizeGameCode(body.gameCode);
+    const table = games.get(gameCode);
 
+    if (!table) {
+      sendJson(res, 404, { error: "Game not found." });
+      return;
+    }
+
+    const player = authenticate(table, body.playerId, body.token);
     if (!player) {
       sendJson(res, 401, { error: "Session expired. Join again." });
       return;
     }
 
     applyAction(table, player, body.action, body.amount);
+    pruneEmptyGame(gameCode);
     sendJson(res, 200, getClientState(table, player));
     return;
   }
 
   sendJson(res, 404, { error: "Not found." });
+}
+
+function createUniqueTable(options) {
+  let table = createTable(options);
+
+  while (games.has(table.gameCode)) {
+    table = createTable(options);
+  }
+
+  return table;
+}
+
+function normalizeGameCode(rawValue) {
+  return String(rawValue || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 8);
+}
+
+function pruneEmptyGame(gameCode) {
+  const table = games.get(gameCode);
+  if (!table) {
+    return;
+  }
+
+  if (table.players.length === 0) {
+    games.delete(gameCode);
+  }
 }
 
 function readJsonBody(req) {
