@@ -9,6 +9,7 @@ const MAX_PLAYERS = 10;
 const INACTIVITY_TIMEOUT_MS = 2 * 60 * 1000;
 const DEFAULT_TURN_TIME_LIMIT_SECONDS = 120;
 const TURN_TIME_LIMIT_OPTIONS = new Set([30, 60, 120, 180]);
+const PERSONAL_PIN_PATTERN = /^\d{4}$/;
 
 const SUITS = ["S", "H", "D", "C"];
 const SUIT_SYMBOLS = {
@@ -69,11 +70,16 @@ function titleCase(value) {
     .join(" ");
 }
 
-function joinPlayer(table, rawName) {
+function joinPlayer(table, rawName, rawPin) {
   const name = sanitizeName(rawName);
+  const personalPin = sanitizePersonalPin(rawPin);
 
   if (!name) {
     throw new Error("Enter a player name.");
+  }
+
+  if (!personalPin) {
+    throw new Error("Enter a 4-digit personal PIN.");
   }
 
   const existingPlayer = table.players.find(
@@ -81,17 +87,18 @@ function joinPlayer(table, rawName) {
   );
 
   if (existingPlayer) {
-    if (existingPlayer.disconnected) {
-      existingPlayer.token = crypto.randomBytes(24).toString("hex");
-      existingPlayer.lastSeenAt = Date.now();
-      existingPlayer.disconnected = false;
-      existingPlayer.markedForRemoval = false;
-      existingPlayer.lastAction = "Rejoined table";
-      logAction(table, `${existingPlayer.name} rejoined the table.`);
-      return existingPlayer;
+    if (!personalPinMatches(existingPlayer, personalPin)) {
+      throw new Error("That seat is already taken or the PIN is wrong.");
     }
 
-    throw new Error("That name is already taken.");
+    existingPlayer.token = crypto.randomBytes(24).toString("hex");
+    existingPlayer.lastSeenAt = Date.now();
+    existingPlayer.disconnected = false;
+    existingPlayer.isBoughtOut = false;
+    existingPlayer.markedForRemoval = false;
+    existingPlayer.lastAction = "Rejoined table";
+    logAction(table, `${existingPlayer.name} rejoined the table.`);
+    return existingPlayer;
   }
 
   if (table.players.length >= MAX_PLAYERS) {
@@ -102,9 +109,11 @@ function joinPlayer(table, rawName) {
     id: crypto.randomUUID(),
     token: crypto.randomBytes(24).toString("hex"),
     name,
+    personalPinHash: hashPersonalPin(personalPin),
     chips: STARTING_CHIPS,
     lastSeenAt: Date.now(),
     disconnected: false,
+    isBoughtOut: false,
     markedForRemoval: false,
     inHand: false,
     hasFolded: false,
@@ -128,6 +137,19 @@ function sanitizeName(rawName) {
     .trim()
     .replace(/\s+/g, " ")
     .slice(0, 16);
+}
+
+function sanitizePersonalPin(rawPin) {
+  const value = String(rawPin || "").trim();
+  return PERSONAL_PIN_PATTERN.test(value) ? value : "";
+}
+
+function hashPersonalPin(pin) {
+  return crypto.createHash("sha256").update(`simple-poker:${pin}`).digest("hex");
+}
+
+function personalPinMatches(player, pin) {
+  return player.personalPinHash === hashPersonalPin(pin);
 }
 
 function createGameCode() {
@@ -196,7 +218,7 @@ function cleanupInactivePlayers(table) {
   syncHostPlayer(table);
 }
 
-function applyAction(table, player, action, amount) {
+function applyAction(table, player, action, amount, targetPlayerId) {
   syncTable(table);
 
   switch (action) {
@@ -226,6 +248,9 @@ function applyAction(table, player, action, amount) {
       break;
     case "leave":
       leavePlayer(table, player);
+      break;
+    case "buyOut":
+      buyOutPlayer(table, player, targetPlayerId);
       break;
     default:
       throw new Error("Unknown action.");
@@ -320,10 +345,14 @@ function startHand(table) {
 }
 
 function canJoinHand(player) {
-  return !player.disconnected && !player.markedForRemoval && player.chips > 0;
+  return !player.disconnected && !player.isBoughtOut && !player.markedForRemoval && player.chips > 0;
 }
 
 function getIdleAction(player) {
+  if (player.isBoughtOut) {
+    return "Bought out";
+  }
+
   if (player.disconnected) {
     return "Disconnected";
   }
@@ -521,34 +550,66 @@ function rebuyPlayer(table, player) {
 
   player.chips = STARTING_CHIPS;
   player.disconnected = false;
+  player.isBoughtOut = false;
   player.markedForRemoval = false;
   player.lastAction = "Rebought";
   logAction(table, `${player.name} re-bought to ${STARTING_CHIPS} chips.`);
 }
 
 function leavePlayer(table, player) {
-  if (table.stage !== "waiting" && player.inHand) {
-    player.markedForRemoval = true;
-    player.disconnected = true;
-    player.lastAction = "Left table";
-    if (!player.hasFolded && !player.isAllIn) {
-      player.hasFolded = true;
-      logAction(table, `${player.name} left the table and folded.`);
-      completeTurn(table, player.id);
-      return;
-    }
+  player.disconnected = true;
+  player.lastSeenAt = Date.now();
 
-    logAction(table, `${player.name} will leave after the hand.`);
+  if (table.stage !== "waiting" && player.inHand && !player.hasFolded && !player.isAllIn) {
+    player.hasFolded = true;
+    player.actedThisStage = true;
+    player.lastAction = "Disconnected and folded";
+    logAction(table, `${player.name} disconnected and folded.`);
+    completeTurn(table, player.id);
     return;
   }
 
-  const index = table.players.findIndex((entry) => entry.id === player.id);
-  if (index >= 0) {
-    table.players.splice(index, 1);
-    fixButtonIndexesAfterRemoval(table, index);
-    syncHostPlayer(table);
-    logAction(table, `${player.name} left the table.`);
+  player.lastAction = "Disconnected";
+  logAction(table, `${player.name} disconnected.`);
+  syncHostPlayer(table);
+}
+
+function buyOutPlayer(table, player, rawTargetPlayerId) {
+  if (table.stage !== "waiting") {
+    throw new Error("Buy out is only allowed between hands.");
   }
+
+  const targetPlayerId = typeof rawTargetPlayerId === "string" ? rawTargetPlayerId : player.id;
+  const targetPlayer = table.players.find((entry) => entry.id === targetPlayerId);
+
+  if (!targetPlayer) {
+    throw new Error("Player not found.");
+  }
+
+  if (targetPlayer.id !== player.id) {
+    ensureHost(table, player);
+    if (!targetPlayer.disconnected) {
+      throw new Error("The host can only buy out disconnected players.");
+    }
+  }
+
+  targetPlayer.disconnected = true;
+  targetPlayer.isBoughtOut = true;
+  targetPlayer.inHand = false;
+  targetPlayer.hasFolded = false;
+  targetPlayer.isAllIn = false;
+  targetPlayer.actedThisStage = false;
+  targetPlayer.currentBet = 0;
+  targetPlayer.holeCards = [];
+  targetPlayer.lastAction = targetPlayer.id === player.id ? "Bought out" : "Bought out by host";
+
+  logAction(
+    table,
+    targetPlayer.id === player.id
+      ? `${targetPlayer.name} bought out.`
+      : `${player.name} bought out ${targetPlayer.name}.`
+  );
+  syncHostPlayer(table);
 }
 
 function ensureHost(table, player) {
@@ -844,6 +905,11 @@ function finalizeHand(table) {
     player.actedThisStage = false;
     player.currentBet = 0;
     player.isAllIn = false;
+
+    if (player.disconnected) {
+      player.isBoughtOut = true;
+      player.lastAction = "Disconnected, bought out";
+    }
   }
 
   removeMarkedPlayers(table);
@@ -915,7 +981,7 @@ function adjustIndexAfterRemoval(index, removedIndex) {
 
 function syncHostPlayer(table) {
   const currentHost = table.players.find(
-    (player) => player.id === table.hostPlayerId && !player.markedForRemoval
+    (player) => player.id === table.hostPlayerId && !player.markedForRemoval && !player.isBoughtOut
   );
 
   if (currentHost) {
@@ -923,7 +989,8 @@ function syncHostPlayer(table) {
   }
 
   const fallback =
-    table.players.find((player) => !player.markedForRemoval && !player.disconnected) ||
+    table.players.find((player) => !player.markedForRemoval && !player.isBoughtOut && !player.disconnected) ||
+    table.players.find((player) => !player.markedForRemoval && !player.isBoughtOut) ||
     table.players.find((player) => !player.markedForRemoval) ||
     null;
 
@@ -1107,6 +1174,7 @@ function getClientState(table, viewer) {
           name: player.name,
           chips: player.chips,
           connected: !player.disconnected,
+          isBoughtOut: player.isBoughtOut,
           inHand: player.inHand,
           hasFolded: player.hasFolded,
           isAllIn: player.isAllIn,
@@ -1147,6 +1215,7 @@ function buildViewerState(table, viewer) {
     id: viewer.id,
     name: viewer.name,
     isHost: table.hostPlayerId === viewer.id,
+    isBoughtOut: viewer.isBoughtOut,
     chips: viewer.chips,
     cards: viewer.holeCards.map(toClientCard),
     toCall,
@@ -1197,6 +1266,7 @@ function buildViewerState(table, viewer) {
         !viewer.isAllIn &&
         viewer.chips > 0,
       rebuy: table.stage === "waiting" && viewer.chips <= 0,
+      buyOut: table.stage === "waiting",
       leave: true
     }
   };

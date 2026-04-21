@@ -45,7 +45,7 @@ async function handleApiRequest(req, res, requestUrl) {
   if (req.method === "POST" && requestUrl.pathname === "/api/create-game") {
     const body = await readJsonBody(req);
     const table = createUniqueTable({ turnTimeLimitSeconds: body.turnTimeLimitSeconds });
-    const hostPlayer = joinPlayer(table, body.name);
+    const hostPlayer = joinPlayer(table, body.name, body.personalPin);
     table.hostPlayerId = hostPlayer.id;
     games.set(table.gameCode, table);
     sendJson(res, 201, {
@@ -66,7 +66,7 @@ async function handleApiRequest(req, res, requestUrl) {
       return;
     }
 
-    const player = joinPlayer(table, body.name);
+    const player = joinPlayer(table, body.name, body.personalPin);
     sendJson(res, 201, {
       gameCode: table.gameCode,
       playerId: player.id,
@@ -112,7 +112,7 @@ async function handleApiRequest(req, res, requestUrl) {
       return;
     }
 
-    applyAction(table, player, body.action, body.amount);
+    applyAction(table, player, body.action, body.amount, body.targetPlayerId);
     pruneEmptyGame(gameCode);
     sendJson(res, 200, getClientState(table, player));
     return;

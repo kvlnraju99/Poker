@@ -11,14 +11,21 @@
   </head>
   <body>
     <div class="app-shell">
-      <section id="home-view" class="panel view-section">
+      <section id="home-view" class="panel home-panel view-section">
+        <p class="eyebrow">Texas Hold'em</p>
         <h1>Simple Poker</h1>
-        <p class="muted-text">Create a new game or join with a game pin.</p>
+        <p class="muted-text">Create a new game or join with a game pin. Use the same name and personal PIN to get your seat back.</p>
+        <p class="home-tip">Built for quick friend games. Works best in phone landscape or on desktop.</p>
 
         <div class="form-block">
           <label>
             <span>Your name</span>
             <input id="home-name" maxlength="16" autocomplete="nickname" required>
+          </label>
+
+          <label>
+            <span>Personal PIN</span>
+            <input id="home-pin" maxlength="4" inputmode="numeric" pattern="[0-9]{4}" placeholder="4 digits" autocomplete="one-time-code" required>
           </label>
 
           <label>
@@ -48,8 +55,9 @@
         <p id="home-error" class="error-text" role="status" aria-live="polite"></p>
       </section>
 
-      <section id="lobby-view" class="panel view-section" hidden>
-        <h1>Game Lobby</h1>
+      <section id="lobby-view" class="panel lobby-panel view-section" hidden>
+        <p class="eyebrow">Game Lobby</p>
+        <h1>Waiting Room</h1>
 
         <div class="info-grid">
           <article class="info-box">
@@ -68,13 +76,14 @@
 
         <div class="action-row">
           <button id="copy-game-code-button" class="secondary">Copy Pin</button>
+          <button id="share-game-code-button" class="secondary">Share Invite</button>
           <button id="start-game-button" class="primary">Start Game</button>
-          <button id="leave-lobby-button" class="secondary">Leave Game</button>
+          <button id="leave-lobby-button" class="secondary">Disconnect</button>
         </div>
 
         <p id="lobby-note" class="muted-text"></p>
 
-        <section class="subpanel">
+        <section class="subpanel players-subpanel">
           <h2>Players</h2>
           <div class="players-header lobby-players-header">
             <span>Player</span>
@@ -89,20 +98,20 @@
       <main id="table-view" class="view-section" hidden>
         <header class="panel header-panel">
           <div>
+            <p class="eyebrow">Live Table</p>
             <h1>Simple Poker</h1>
-            <p id="status-line" class="muted-text"></p>
-            <p class="muted-text">
+            <p class="table-meta-line muted-text">
               Game <strong id="table-game-code">------</strong>
               |
               Turn Limit <strong id="table-turn-limit">2 minutes</strong>
               |
-              <span id="turn-timer-label">No active timer</span>
+              <span id="turn-timer-label" class="timer-pill">No active timer</span>
             </p>
           </div>
 
           <div class="action-row">
             <button id="start-hand-button" class="primary">Start Next Hand</button>
-            <button id="leave-table-button" class="secondary">Leave Game</button>
+            <button id="leave-table-button" class="secondary">Disconnect</button>
           </div>
         </header>
 
@@ -130,28 +139,27 @@
 
         <section class="panel">
           <div class="table-action-layout">
-            <div class="vertical-stats-wrap">
-              <table class="vertical-stats-table">
-                <tbody>
-                  <tr>
-                    <th>Pot</th>
-                    <td id="pot-value">0</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="play-summary-block">
+              <div class="pot-card">
+                <span>Pot</span>
+                <strong id="pot-value">0</strong>
+              </div>
+              <p id="status-line" class="action-status"></p>
             </div>
 
-            <div class="dropdown-actions-panel">
-              <label class="action-select-label">
-                <span>Action</span>
-                <div class="action-inline-row">
-                  <select id="action-select">
-                    <option value="">No action</option>
-                  </select>
+            <div class="play-controls-panel">
+              <div id="quick-actions" class="quick-actions"></div>
+
+              <div id="raise-drawer" class="raise-drawer" hidden>
+                <span class="raise-drawer-label">Raise to</span>
+                <div class="raise-inline-row">
+                  <button id="raise-minus-button" class="secondary" type="button">-</button>
                   <input id="raise-input" type="number" min="0" step="10" placeholder="Amount">
-                  <button id="action-submit-button" class="primary">Play</button>
+                  <button id="raise-plus-button" class="secondary" type="button">+</button>
+                  <button id="raise-confirm-button" class="primary" type="button">Confirm Raise</button>
+                  <button id="raise-cancel-button" class="secondary" type="button">Cancel</button>
                 </div>
-              </label>
+              </div>
             </div>
           </div>
 
@@ -160,15 +168,22 @@
 
         <section class="panel">
           <h2>Players</h2>
-          <div class="players-header">
-            <span>Player</span>
-            <span>Status</span>
-            <span>Chips</span>
-            <span>Round</span>
-            <span>Total</span>
-            <span>Note</span>
-          </div>
           <div id="players-grid" class="players-table"></div>
+        </section>
+
+        <section class="panel support-panel">
+          <div class="support-grid">
+            <article class="support-card">
+              <p class="support-label">Last Hand</p>
+              <div id="last-hand-summary" class="support-summary">No hand finished yet.</div>
+              <div id="last-hand-winners" class="support-winners"></div>
+            </article>
+
+            <article class="support-card support-card-activity">
+              <p class="support-label">Recent Activity</p>
+              <div id="recent-actions" class="recent-actions"></div>
+            </article>
+          </div>
         </section>
       </main>
     </div>

@@ -1,10 +1,12 @@
-const SESSION_KEY = "simple-poker-session-v2";
+const SESSION_KEY = "simple-poker-session-v3";
 const POLL_INTERVAL_MS = 1000;
+const RAISE_STEP = 10;
 
 let session = loadSession();
 let state = null;
 let pollHandle = null;
 let timerHandle = null;
+let raiseDrawerOpen = false;
 
 const rotateOverlay = document.getElementById("rotate-overlay");
 const homeView = document.getElementById("home-view");
@@ -12,6 +14,7 @@ const lobbyView = document.getElementById("lobby-view");
 const tableView = document.getElementById("table-view");
 
 const homeName = document.getElementById("home-name");
+const homePin = document.getElementById("home-pin");
 const turnTimeSelect = document.getElementById("turn-time-select");
 const joinGameCode = document.getElementById("join-game-code");
 const createGameButton = document.getElementById("create-game-button");
@@ -25,6 +28,7 @@ const lobbyPlayers = document.getElementById("lobby-players");
 const lobbyNote = document.getElementById("lobby-note");
 const lobbyError = document.getElementById("lobby-error");
 const copyGameCodeButton = document.getElementById("copy-game-code-button");
+const shareGameCodeButton = document.getElementById("share-game-code-button");
 const startGameButton = document.getElementById("start-game-button");
 const leaveLobbyButton = document.getElementById("leave-lobby-button");
 
@@ -39,15 +43,26 @@ const youChips = document.getElementById("you-chips");
 const yourCards = document.getElementById("your-cards");
 const playersGrid = document.getElementById("players-grid");
 const actionError = document.getElementById("action-error");
+const lastHandSummary = document.getElementById("last-hand-summary");
+const lastHandWinners = document.getElementById("last-hand-winners");
+const recentActions = document.getElementById("recent-actions");
 
 const startHandButton = document.getElementById("start-hand-button");
 const leaveTableButton = document.getElementById("leave-table-button");
-const actionSelect = document.getElementById("action-select");
+const quickActions = document.getElementById("quick-actions");
+const raiseDrawer = document.getElementById("raise-drawer");
 const raiseInput = document.getElementById("raise-input");
-const actionSubmitButton = document.getElementById("action-submit-button");
+const raiseMinusButton = document.getElementById("raise-minus-button");
+const raisePlusButton = document.getElementById("raise-plus-button");
+const raiseConfirmButton = document.getElementById("raise-confirm-button");
+const raiseCancelButton = document.getElementById("raise-cancel-button");
 
 joinGameCode.addEventListener("input", () => {
   joinGameCode.value = normalizeGameCode(joinGameCode.value);
+});
+
+homePin.addEventListener("input", () => {
+  homePin.value = normalizePersonalPin(homePin.value);
 });
 
 createGameButton.addEventListener("click", () => {
@@ -59,6 +74,7 @@ joinGameButton.addEventListener("click", () => {
   joinGame();
 });
 copyGameCodeButton.addEventListener("click", copyGameCode);
+shareGameCodeButton.addEventListener("click", shareGameCode);
 startGameButton.addEventListener("click", () => {
   tryLockLandscape();
   sendAction("startGame", undefined, "lobby");
@@ -69,8 +85,10 @@ startHandButton.addEventListener("click", () => {
   sendAction("startHand");
 });
 leaveTableButton.addEventListener("click", leaveGame);
-actionSelect.addEventListener("change", updateActionInputState);
-actionSubmitButton.addEventListener("click", submitSelectedAction);
+raiseMinusButton.addEventListener("click", () => nudgeRaiseAmount(-RAISE_STEP));
+raisePlusButton.addEventListener("click", () => nudgeRaiseAmount(RAISE_STEP));
+raiseConfirmButton.addEventListener("click", submitRaiseAction);
+raiseCancelButton.addEventListener("click", closeRaiseDrawer);
 
 if (window.addEventListener) {
   window.addEventListener("resize", updateOrientationNotice);
@@ -80,6 +98,7 @@ if (window.addEventListener) {
 boot();
 
 function boot() {
+  prefillJoinCodeFromUrl();
   if (!session || !session.gameCode || !session.playerId || !session.token) {
     clearSession();
     showHome();
@@ -93,6 +112,7 @@ function boot() {
 async function createGame() {
   homeError.textContent = "";
   const name = homeName.value.trim();
+  const personalPin = normalizePersonalPin(homePin.value);
   const turnTimeLimitSeconds = Number(turnTimeSelect.value);
 
   if (!name) {
@@ -100,10 +120,15 @@ async function createGame() {
     return;
   }
 
+  if (personalPin.length !== 4) {
+    homeError.textContent = "Enter a 4-digit personal PIN.";
+    return;
+  }
+
   try {
     const response = await request("/api/create-game", {
       method: "POST",
-      body: JSON.stringify({ name, turnTimeLimitSeconds })
+      body: JSON.stringify({ name, personalPin, turnTimeLimitSeconds })
     });
 
     session = response;
@@ -118,10 +143,16 @@ async function createGame() {
 async function joinGame() {
   homeError.textContent = "";
   const name = homeName.value.trim();
+  const personalPin = normalizePersonalPin(homePin.value);
   const gameCode = normalizeGameCode(joinGameCode.value);
 
   if (!name) {
     homeError.textContent = "Enter your name.";
+    return;
+  }
+
+  if (personalPin.length !== 4) {
+    homeError.textContent = "Enter a 4-digit personal PIN.";
     return;
   }
 
@@ -135,7 +166,7 @@ async function joinGame() {
   try {
     const response = await request("/api/join-game", {
       method: "POST",
-      body: JSON.stringify({ name, gameCode })
+      body: JSON.stringify({ name, personalPin, gameCode })
     });
 
     session = response;
@@ -162,6 +193,32 @@ async function copyGameCode() {
   }
 }
 
+async function shareGameCode() {
+  if (!state) {
+    return;
+  }
+
+  const gameUrl = buildGameInviteUrl(state.table.gameCode);
+  const inviteText = `Join my Simple Poker game with code ${state.table.gameCode}.`;
+
+  try {
+    if (navigator.share) {
+      await navigator.share({
+        title: "Simple Poker",
+        text: inviteText,
+        url: gameUrl
+      });
+      lobbyError.textContent = "Invite shared.";
+      return;
+    }
+
+    await navigator.clipboard.writeText(`${inviteText} ${gameUrl}`);
+    lobbyError.textContent = "Invite copied.";
+  } catch (error) {
+    lobbyError.textContent = `Share this code: ${state.table.gameCode}`;
+  }
+}
+
 async function leaveGame() {
   if (!session) {
     showHome();
@@ -182,6 +239,7 @@ function showHome() {
   homeView.hidden = false;
   lobbyView.hidden = true;
   tableView.hidden = true;
+  raiseDrawerOpen = false;
   stopTurnTimer();
   updateOrientationNotice();
 }
@@ -190,6 +248,7 @@ function showLobby() {
   homeView.hidden = true;
   lobbyView.hidden = false;
   tableView.hidden = true;
+  raiseDrawerOpen = false;
   stopTurnTimer();
   updateOrientationNotice();
 }
@@ -223,6 +282,7 @@ async function refreshState() {
       `/api/state?gameCode=${encodeURIComponent(session.gameCode)}&playerId=${encodeURIComponent(session.playerId)}&token=${encodeURIComponent(session.token)}`
     );
     state = nextState;
+    syncGameCodeInUrl(nextState.table.gameCode);
     render();
     homeError.textContent = "";
     lobbyError.textContent = "";
@@ -231,7 +291,9 @@ async function refreshState() {
     if (error.status === 401 || error.status === 404) {
       clearStateAndSession();
       showHome();
-      homeError.textContent = error.status === 404 ? "Game not found." : "Your session ended. Join again.";
+      homeError.textContent = error.status === 404
+        ? "That game is no longer available."
+        : "That seat needs you to sign in again.";
       return;
     }
 
@@ -245,7 +307,7 @@ async function refreshState() {
   }
 }
 
-async function sendAction(action, amount, context = "table", suppressRender = false) {
+async function sendAction(action, amount, context = "table", suppressRender = false, extra = {}) {
   if (!session) {
     return;
   }
@@ -264,7 +326,8 @@ async function sendAction(action, amount, context = "table", suppressRender = fa
         playerId: session.playerId,
         token: session.token,
         action,
-        amount
+        amount,
+        targetPlayerId: extra.targetPlayerId
       })
     });
 
@@ -276,7 +339,9 @@ async function sendAction(action, amount, context = "table", suppressRender = fa
     if (error.status === 401 || error.status === 404) {
       clearStateAndSession();
       showHome();
-      homeError.textContent = error.status === 404 ? "Game not found." : "Your session ended. Join again.";
+      homeError.textContent = error.status === 404
+        ? "That game is no longer available."
+        : "That seat needs you to sign in again.";
       return;
     }
 
@@ -321,13 +386,11 @@ function updateOrientationNotice() {
     return;
   }
 
-  const isPhoneWidth = typeof window !== "undefined" ? window.innerWidth <= 900 : false;
-  const isPortrait = typeof window !== "undefined" ? window.innerHeight > window.innerWidth : false;
-  const showOverlay = !tableView.hidden && isPhoneWidth && isPortrait;
-  rotateOverlay.hidden = !showOverlay;
+  rotateOverlay.hidden = true;
 }
 
 function renderLobby(table, you) {
+  syncGameCodeInUrl(table.gameCode);
   lobbyGameCode.textContent = table.gameCode;
   lobbyTurnLimit.textContent = formatTurnLimit(table.turnTimeLimitSeconds);
   lobbyPlayerCount.textContent = `${table.players.length} / ${table.maxPlayers}`;
@@ -349,31 +412,39 @@ function renderLobby(table, you) {
     }
     if (!player.connected) {
       status.push("Away");
+    } else if (!player.isBoughtOut) {
+      status.push("Ready");
+    }
+    if (player.isBoughtOut) {
+      status.push("Bought out");
     }
 
     row.innerHTML = `
       <span class="player-name">${escapeHtml(player.name)}</span>
-      <span class="player-status">${escapeHtml(status.join(", ") || "Waiting")}</span>
+      <span class="player-status-badges">${renderBadgeMarkup(status, "soft") || '<span class="status-badge status-badge-soft">Waiting</span>'}</span>
     `;
     lobbyPlayers.appendChild(row);
   }
 
   startGameButton.disabled = !you.availableActions.startGame;
   startGameButton.hidden = !you.isHost;
+  const readyPlayers = table.players.filter((player) => player.connected && !player.isBoughtOut).length;
 
   if (!you.isHost) {
     lobbyNote.textContent = "Waiting for the host to start the game.";
-  } else if (table.players.length < 2) {
+  } else if (readyPlayers < 2) {
     lobbyNote.textContent = "At least two players are needed to start.";
   } else {
-    lobbyNote.textContent = "You are the host. Start when everyone is ready.";
+    lobbyNote.textContent = `${readyPlayers} players are ready. Start when you want.`;
   }
 }
 
 function renderTable(table, you) {
+  syncGameCodeInUrl(table.gameCode);
   const actingPlayer = table.players.find((player) => player.id === table.turnPlayerId);
 
   statusLine.textContent = buildStatusLine(table, you, actingPlayer);
+  statusLine.classList.toggle("is-your-turn", Boolean(you.isTurn));
   tableGameCode.textContent = table.gameCode;
   tableTurnLimit.textContent = formatTurnLimit(table.turnTimeLimitSeconds);
   potValue.textContent = formatChips(table.pot);
@@ -382,12 +453,13 @@ function renderTable(table, you) {
 
   renderCards(communityCards, table.communityCards, { fillerCount: Math.max(0, 5 - table.communityCards.length) });
   renderCards(yourCards, you.cards, { fillerCount: Math.max(0, 2 - you.cards.length) });
-  renderTablePlayers(table.players, you.id);
-  renderControls(you);
+  renderTablePlayers(table.players, you, table);
+  renderControls(you, table);
+  renderSupportPanels(table);
   renderTurnTimer(table);
 }
 
-function renderTablePlayers(players, viewerId) {
+function renderTablePlayers(players, viewer, table) {
   playersGrid.innerHTML = "";
 
   for (const player of players) {
@@ -403,9 +475,12 @@ function renderTablePlayers(players, viewerId) {
     if (!player.connected) {
       row.classList.add("is-disconnected");
     }
+    if (player.isBoughtOut) {
+      row.classList.add("is-bought-out");
+    }
 
     const status = [];
-    if (player.id === viewerId) {
+    if (player.id === viewer.id) {
       status.push("You");
     }
     if (player.isHost) {
@@ -429,99 +504,190 @@ function renderTablePlayers(players, viewerId) {
     if (!player.connected) {
       status.push("Away");
     }
+    if (player.isBoughtOut) {
+      status.push("Bought out");
+    }
+
+    const canHostBuyOut =
+      viewer.isHost &&
+      table.stage === "waiting" &&
+      player.id !== viewer.id &&
+      player.connected === false &&
+      player.isBoughtOut === false;
+
+    const noteContent = canHostBuyOut
+      ? `${escapeHtml(player.showdownHand || player.lastAction)} <button class="table-mini-button" data-action="host-buyout" data-player-id="${player.id}">Buy Out</button>`
+      : escapeHtml(player.showdownHand || player.lastAction);
 
     row.innerHTML = `
-      <span class="player-name">${escapeHtml(player.name)}</span>
-      <span class="player-status">${escapeHtml(status.join(", ") || "-")}</span>
-      <span>${formatChips(player.chips)}</span>
-      <span>${formatChips(player.currentBet)}</span>
-      <span>${formatChips(player.totalContribution)}</span>
-      <span class="player-note">${escapeHtml(player.showdownHand || player.lastAction)}</span>
+      <div class="player-row-main">
+        <div class="player-row-identity">
+          <span class="player-name">${escapeHtml(player.name)}</span>
+          <span class="player-chip-stack">${formatChips(player.chips)} chips</span>
+        </div>
+        <div class="player-status-badges">${renderBadgeMarkup(status, player.isTurn ? "gold" : "soft") || '<span class="status-badge status-badge-soft">Waiting</span>'}</div>
+      </div>
+      <div class="player-row-foot">
+        <div class="player-mini-stats">
+          <span>Round ${formatChips(player.currentBet)}</span>
+          <span>Total ${formatChips(player.totalContribution)}</span>
+        </div>
+        <div class="player-note">${noteContent}</div>
+      </div>
     `;
 
     playersGrid.appendChild(row);
   }
+
+  for (const button of playersGrid.querySelectorAll("[data-action='host-buyout']")) {
+    button.addEventListener("click", () => {
+      sendAction("buyOut", undefined, "table", false, { targetPlayerId: button.dataset.playerId });
+    });
+  }
 }
 
-function renderControls(you) {
+function renderControls(you, table) {
   startHandButton.disabled = !you.availableActions.startHand;
   startHandButton.hidden = !you.isHost;
-  const options = buildActionOptions(you);
-  const previousValue = actionSelect.value;
-  actionSelect.innerHTML = options.map((option) => (
-    `<option value="${option.value}">${escapeHtml(option.label)}</option>`
-  )).join("");
+  const actions = buildActionItems(you);
 
-  if (options.some((option) => option.value === previousValue)) {
-    actionSelect.value = previousValue;
+  quickActions.innerHTML = actions.length
+    ? actions.map((action) => (
+      `<button class="action-chip ${action.kind}" type="button" data-action="${action.value}">${escapeHtml(action.label)}</button>`
+    )).join("")
+    : '<span class="controls-empty">No action right now.</span>';
+
+  for (const button of quickActions.querySelectorAll("[data-action]")) {
+    button.addEventListener("click", () => handleQuickAction(button.dataset.action));
   }
-
-  actionSelect.disabled = options.length <= 1;
-  actionSubmitButton.disabled = options.length <= 1;
 
   raiseInput.min = String(you.minRaiseTo);
   raiseInput.max = String(you.maxBet);
-  updateActionInputState();
+  raiseInput.step = String(RAISE_STEP);
 
-  if (actionSelect.value === "raise" && you.availableActions.raise) {
-    const currentValue = Number(raiseInput.value);
-    if (!Number.isFinite(currentValue) || currentValue < you.minRaiseTo || currentValue > you.maxBet) {
-      raiseInput.value = String(you.minRaiseTo);
-    }
-  } else if (actionSelect.value !== "raise") {
-    raiseInput.value = "";
+  if (!you.availableActions.raise) {
+    raiseDrawerOpen = false;
+  }
+
+  if (raiseDrawerOpen && you.availableActions.raise) {
+    raiseDrawer.hidden = false;
+    syncRaiseInputBounds(you);
+  } else {
+    raiseDrawer.hidden = true;
   }
 }
 
-function buildActionOptions(you) {
-  const options = [{ value: "", label: "Select action" }];
-
+function buildActionItems(you) {
+  const actions = [];
   if (you.availableActions.check) {
-    options.push({ value: "check", label: "Check" });
+    actions.push({ value: "check", label: "Check", kind: "action-chip-primary" });
   }
 
   if (you.availableActions.call) {
-    options.push({ value: "call", label: `Call ${formatChips(you.toCall)}` });
-  }
-
-  if (you.availableActions.fold) {
-    options.push({ value: "fold", label: "Fold" });
+    actions.push({ value: "call", label: `Call ${formatChips(you.toCall)}`, kind: "action-chip-primary" });
   }
 
   if (you.availableActions.raise) {
-    options.push({ value: "raise", label: "Raise" });
+    actions.push({ value: "raise", label: "Raise", kind: "action-chip-secondary" });
+  }
+
+  if (you.availableActions.fold) {
+    actions.push({ value: "fold", label: "Fold", kind: "action-chip-danger" });
   }
 
   if (you.availableActions.allIn) {
-    options.push({ value: "allIn", label: "All In" });
+    actions.push({ value: "allIn", label: "All In", kind: "action-chip-secondary" });
   }
 
   if (you.availableActions.rebuy) {
-    options.push({ value: "rebuy", label: "Rebuy 1000" });
+    actions.push({ value: "rebuy", label: "Rebuy 1000", kind: "action-chip-secondary" });
   }
 
-  return options;
-}
-
-function updateActionInputState() {
-  const selectedAction = actionSelect.value;
-  const isRaise = selectedAction === "raise";
-  raiseInput.disabled = !isRaise;
-  actionSubmitButton.disabled = actionSelect.disabled || !selectedAction;
-
-  if (!isRaise) {
-    raiseInput.value = "";
+  if (you.availableActions.buyOut) {
+    actions.push({ value: "buyOut", label: "Buy Out", kind: "action-chip-secondary" });
   }
+
+  return actions;
 }
 
-function submitSelectedAction() {
-  const action = actionSelect.value;
-  if (!action) {
+function handleQuickAction(action) {
+  if (!state || !state.you) {
     return;
   }
 
-  const amount = action === "raise" ? Number(raiseInput.value) : undefined;
-  sendAction(action, amount);
+  actionError.textContent = "";
+
+  if (action === "raise") {
+    openRaiseDrawer();
+    return;
+  }
+
+  if (action === "buyOut") {
+    sendAction(action).then(() => {
+      clearStateAndSession();
+      showHome();
+    }).catch(() => {});
+    return;
+  }
+
+  raiseDrawerOpen = false;
+  sendAction(action);
+}
+
+function openRaiseDrawer() {
+  if (!state || !state.you || !state.you.availableActions.raise) {
+    return;
+  }
+
+  actionError.textContent = "";
+  raiseDrawerOpen = true;
+  renderControls(state.you, state.table);
+}
+
+function closeRaiseDrawer() {
+  actionError.textContent = "";
+  raiseDrawerOpen = false;
+  if (state && state.you) {
+    renderControls(state.you, state.table);
+  }
+}
+
+function syncRaiseInputBounds(you) {
+  const currentValue = Number(raiseInput.value);
+  if (!Number.isFinite(currentValue) || currentValue < you.minRaiseTo || currentValue > you.maxBet) {
+    raiseInput.value = String(you.minRaiseTo);
+  }
+}
+
+function nudgeRaiseAmount(delta) {
+  if (!state || !state.you || !state.you.availableActions.raise) {
+    return;
+  }
+
+  syncRaiseInputBounds(state.you);
+  const currentValue = Number(raiseInput.value) || state.you.minRaiseTo;
+  const nextValue = Math.max(state.you.minRaiseTo, Math.min(state.you.maxBet, currentValue + delta));
+  raiseInput.value = String(nextValue);
+}
+
+function submitRaiseAction() {
+  if (!state || !state.you || !state.you.availableActions.raise) {
+    return;
+  }
+
+  const amount = Number(raiseInput.value);
+  if (!Number.isFinite(amount)) {
+    actionError.textContent = "Enter a raise amount.";
+    return;
+  }
+
+  raiseDrawerOpen = false;
+  sendAction("raise", amount).catch(() => {
+    raiseDrawerOpen = true;
+    if (state && state.you) {
+      renderControls(state.you, state.table);
+    }
+  });
 }
 
 function renderTurnTimer(table) {
@@ -529,6 +695,7 @@ function renderTurnTimer(table) {
 
   if (!table.turnDeadlineAt || table.stage === "waiting") {
     turnTimerLabel.textContent = "No active timer";
+    turnTimerLabel.classList.remove("is-live", "is-urgent");
     return;
   }
 
@@ -542,6 +709,8 @@ function updateTurnTimer(deadlineAt) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   turnTimerLabel.textContent = `Turn time left ${minutes}:${String(seconds).padStart(2, "0")}`;
+  turnTimerLabel.classList.add("is-live");
+  turnTimerLabel.classList.toggle("is-urgent", totalSeconds <= 15);
 }
 
 function stopTurnTimer() {
@@ -553,6 +722,15 @@ function stopTurnTimer() {
 
 function buildStatusLine(table, you, actingPlayer) {
   if (table.stage === "waiting") {
+    const readyPlayers = table.players.filter((player) => player.connected && !player.isBoughtOut).length;
+    if (readyPlayers < 2) {
+      return "Waiting for at least two ready players.";
+    }
+
+    if (you.isBoughtOut) {
+      return "You are bought out for the next hand. Rejoin with your name and PIN to sit back in.";
+    }
+
     if (you.isHost && you.availableActions.startHand) {
       return "Ready for the next hand.";
     }
@@ -571,6 +749,36 @@ function buildStatusLine(table, you, actingPlayer) {
   }
 
   return "Hand in progress.";
+}
+
+function renderSupportPanels(table) {
+  renderLastHand(table.lastHand);
+  renderRecentActions(table.actionLog || []);
+}
+
+function renderLastHand(lastHand) {
+  if (!lastHand) {
+    lastHandSummary.textContent = "No hand finished yet.";
+    lastHandWinners.innerHTML = "";
+    return;
+  }
+
+  lastHandSummary.textContent = lastHand.summary;
+  lastHandWinners.innerHTML = (lastHand.winners || [])
+    .map((winner) => `<span class="winner-pill">${escapeHtml(winner.name)} +${formatChips(winner.amount)}</span>`)
+    .join("");
+}
+
+function renderRecentActions(actionLog) {
+  const items = actionLog.slice(0, 4);
+  if (!items.length) {
+    recentActions.innerHTML = '<span class="support-empty">No action yet.</span>';
+    return;
+  }
+
+  recentActions.innerHTML = items
+    .map((item) => `<div class="activity-item">${escapeHtml(item.text)}</div>`)
+    .join("");
 }
 
 function renderCards(container, cards, options = {}) {
@@ -597,6 +805,12 @@ function renderCardsMarkup(cards, hiddenCount) {
   }
 
   return parts.join("");
+}
+
+function renderBadgeMarkup(items, tone = "soft") {
+  return items
+    .map((item) => `<span class="status-badge status-badge-${tone}">${escapeHtml(item)}</span>`)
+    .join("");
 }
 
 async function request(url, options = {}) {
@@ -628,12 +842,54 @@ function formatTurnLimit(seconds) {
   return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
 }
 
+function prefillJoinCodeFromUrl() {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const code = normalizeGameCode(new URLSearchParams(window.location.search).get("game"));
+  if (code) {
+    joinGameCode.value = code;
+  }
+}
+
+function syncGameCodeInUrl(gameCode) {
+  if (typeof window === "undefined" || !window.history || !window.location) {
+    return;
+  }
+
+  const code = normalizeGameCode(gameCode);
+  if (!code) {
+    return;
+  }
+
+  const url = new URL(window.location.href);
+  url.searchParams.set("game", code);
+  window.history.replaceState({}, "", url);
+}
+
+function buildGameInviteUrl(gameCode) {
+  if (typeof window === "undefined" || !window.location) {
+    return "";
+  }
+
+  const url = new URL(window.location.href);
+  url.searchParams.set("game", normalizeGameCode(gameCode));
+  return url.toString();
+}
+
 function normalizeGameCode(rawValue) {
   return String(rawValue || "")
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, "")
     .slice(0, 8);
+}
+
+function normalizePersonalPin(rawValue) {
+  return String(rawValue || "")
+    .replace(/\D/g, "")
+    .slice(0, 4);
 }
 
 function loadSession() {
